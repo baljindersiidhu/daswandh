@@ -1,12 +1,10 @@
-package com.daswandh.backend.contoller;
+package com.daswandh.backend.controller;
 
 import com.daswandh.backend.dto.HealthResponse;
 import com.daswandh.backend.service.HealthService;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/health")
