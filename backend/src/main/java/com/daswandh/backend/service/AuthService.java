@@ -6,16 +6,17 @@ import com.daswandh.backend.dto.RegisterRequest;
 import com.daswandh.backend.dto.UserResponse;
 import com.daswandh.backend.entity.User;
 import com.daswandh.backend.enums.Role;
+import com.daswandh.backend.exception.ConflictException;
+import com.daswandh.backend.exception.ForbiddenException;
+import com.daswandh.backend.exception.UnauthorizedException;
 import com.daswandh.backend.repository.UserRepository;
 import com.daswandh.backend.security.JwtService;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Locale;
 
@@ -40,11 +41,11 @@ public class AuthService {
     @Transactional
     public AuthResponse register(RegisterRequest request) {
         if (request.role() == Role.ADMIN) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin accounts cannot be self-registered");
+            throw new ForbiddenException("Admin accounts cannot be self-registered");
         }
         String email = normalize(request.email());
         if (userRepository.existsByEmail(email)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
+            throw new ConflictException("Email is already registered");
         }
 
         // We store only the BCrypt hash, never the raw password.
@@ -61,7 +62,7 @@ public class AuthService {
             authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(email, request.password()));
         } catch (AuthenticationException e) {
             // Same message for "no such user" and "wrong password", so attackers can't discover which emails exist.
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
+            throw new UnauthorizedException("Invalid email or password");
         }
         User user = userRepository.findByEmail(email).orElseThrow(); // exists: authentication just succeeded
         return buildResponse(user);

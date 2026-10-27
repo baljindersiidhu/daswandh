@@ -1,10 +1,9 @@
 package com.daswandh.backend.service;
 
 import com.daswandh.backend.dto.UserResponse;
+import com.daswandh.backend.exception.ResourceNotFoundException;
 import com.daswandh.backend.repository.UserRepository;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class UserService {
@@ -18,6 +17,6 @@ public class UserService {
     public UserResponse getProfile(String email) {
         return userRepository.findByEmail(email)
                 .map(UserResponse::from)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
     }
 }

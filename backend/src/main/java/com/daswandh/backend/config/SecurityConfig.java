@@ -2,6 +2,7 @@ package com.daswandh.backend.config;
 
 import com.daswandh.backend.security.JwtAuthenticationFilter;
 import com.daswandh.backend.security.JwtService;
+import com.daswandh.backend.security.RestSecurityErrorHandler;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,24 +31,23 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http,
                                             JwtService jwtService,
-                                            UserDetailsService userDetailsService) throws Exception {
+                                            UserDetailsService userDetailsService,
+                                            RestSecurityErrorHandler securityErrorHandler) throws Exception {
 
         JwtAuthenticationFilter jwtFilter = new JwtAuthenticationFilter(jwtService, userDetailsService);
 
         http
-                // CSRF attacks rely on browsers auto-sending cookies. We use no cookies or sessions:
-                // the token is sent manually in a header, so CSRF protection isn't needed.
                 .csrf(csrf -> csrf.disable())
-                .cors(Customizer.withDefaults()) // uses the corsConfigurationSource bean below
+                .cors(Customizer.withDefaults())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                // Without this, a missing token gives a confusing 403. We want 401.
-                .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+                // 401 and 403 now return our JSON format instead of an empty body
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint(securityErrorHandler)
+                        .accessDeniedHandler(securityErrorHandler))
                 .authorizeHttpRequests(auth -> auth
-                        // /error must be open, or Spring's error page itself gets blocked
                         .requestMatchers("/error", "/api/health", "/api/auth/**").permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                // run our filter before Spring's default login filter
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
