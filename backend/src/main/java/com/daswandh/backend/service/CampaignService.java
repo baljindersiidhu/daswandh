@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class CampaignService {
@@ -29,16 +30,18 @@ public class CampaignService {
     private final CampaignRepository campaignRepository;
     private final MilestoneRepository milestoneRepository;
     private final UserRepository userRepository;
+    private final LedgerService ledgerService;
 
     public CampaignService(CampaignRepository campaignRepository,
                            MilestoneRepository milestoneRepository,
-                           UserRepository userRepository) {
+                           UserRepository userRepository,
+                           LedgerService ledgerService) {
         this.campaignRepository = campaignRepository;
         this.milestoneRepository = milestoneRepository;
         this.userRepository = userRepository;
+        this.ledgerService = ledgerService;
     }
 
-    // One transaction: the campaign and ALL its milestones are saved, or none are.
     @Transactional
     public CampaignDetailResponse create(String creatorEmail, CreateCampaignRequest request) {
         User creator = userRepository.findByEmail(creatorEmail)
@@ -50,14 +53,15 @@ public class CampaignService {
                 request.description().trim(), request.goalPaise(), request.deadline()));
 
         List<Milestone> milestones = new ArrayList<>();
-        int sequenceNo = 1; // the order comes from the list position, never from the client
+        int sequenceNo = 1;
         for (MilestoneRequest item : request.milestones()) {
             milestones.add(new Milestone(campaign, sequenceNo++, item.title().trim(),
                     blankToNull(item.description()), item.amountPaise()));
         }
         milestoneRepository.saveAll(milestones);
 
-        return CampaignDetailResponse.from(campaign, milestones);
+        // A brand-new campaign has an empty ledger, so no query is needed.
+        return CampaignDetailResponse.from(campaign, milestones, LedgerSummary.of(0, 0));
     }
 
     @Transactional
@@ -65,7 +69,6 @@ public class CampaignService {
         Campaign campaign = campaignRepository.findWithCreatorById(campaignId)
                 .orElseThrow(() -> new ResourceNotFoundException("Campaign not found"));
 
-        // Object-level authorization: having the CREATOR role is not enough, it must be YOUR campaign.
         if (!campaign.getCreator().getEmail().equals(email)) {
             throw new ForbiddenException("You can only publish your own campaigns");
         }
@@ -76,13 +79,10 @@ public class CampaignService {
             throw new BadRequestException("The deadline has already passed");
         }
 
-        // No save() needed: Hibernate's dirty checking writes the UPDATE when the transaction commits.
-        campaign.setStatus(CampaignStatus.ACTIVE);
+        campaign.setStatus(CampaignStatus.ACTIVE); // dirty checking writes the UPDATE at commit
         return toDetail(campaign);
     }
 
-    // readOnly = true: no dirty checking, and a hint to the database. We map to DTOs INSIDE
-    // the transaction because lazy fields can't be read after it ends.
     @Transactional(readOnly = true)
     public CampaignDetailResponse getById(Long id, String viewerEmail) {
         Campaign campaign = campaignRepository.findWithCreatorById(id)
@@ -90,32 +90,38 @@ public class CampaignService {
 
         boolean isOwner = viewerEmail != null && campaign.getCreator().getEmail().equals(viewerEmail);
         if (campaign.getStatus() == CampaignStatus.DRAFT && !isOwner) {
-            throw new ResourceNotFoundException("Campaign not found"); // drafts look non-existent to others
+            throw new ResourceNotFoundException("Campaign not found");
         }
         return toDetail(campaign);
     }
 
     @Transactional(readOnly = true)
     public PageResponse<CampaignSummaryResponse> listActive(int page, int size) {
-        // Clamp instead of failing, so ?size=100000 can't hurt the database.
         int safePage = Math.max(page, 0);
         int safeSize = Math.min(Math.max(size, 1), 50);
         Pageable pageable = PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "createdAt"));
 
-        Page<CampaignSummaryResponse> result = campaignRepository
-                .findByStatus(CampaignStatus.ACTIVE, pageable)
-                .map(CampaignSummaryResponse::from);
-        return PageResponse.from(result);
+        Page<Campaign> campaigns = campaignRepository.findByStatus(CampaignStatus.ACTIVE, pageable);
+
+        // One extra query for the whole page, not one per campaign.
+        Map<Long, Long> raised = ledgerService.raisedByCampaign(
+                campaigns.getContent().stream().map(Campaign::getId).toList());
+
+        return PageResponse.from(campaigns.map(c ->
+                CampaignSummaryResponse.from(c, raised.getOrDefault(c.getId(), 0L))));
     }
 
     @Transactional(readOnly = true)
     public List<CampaignSummaryResponse> listMine(String email) {
-        return campaignRepository.findByCreatorEmailOrderByCreatedAtDesc(email).stream()
-                .map(CampaignSummaryResponse::from)
+        List<Campaign> campaigns = campaignRepository.findByCreatorEmailOrderByCreatedAtDesc(email);
+        Map<Long, Long> raised = ledgerService.raisedByCampaign(
+                campaigns.stream().map(Campaign::getId).toList());
+
+        return campaigns.stream()
+                .map(c -> CampaignSummaryResponse.from(c, raised.getOrDefault(c.getId(), 0L)))
                 .toList();
     }
 
-    // Business rule: the plan must account for every paisa of the goal.
     private void validateMilestonePlan(CreateCampaignRequest request) {
         long total = request.milestones().stream().mapToLong(MilestoneRequest::amountPaise).sum();
         if (total != request.goalPaise()) {
@@ -126,7 +132,7 @@ public class CampaignService {
 
     private CampaignDetailResponse toDetail(Campaign campaign) {
         List<Milestone> milestones = milestoneRepository.findByCampaignIdOrderBySequenceNoAsc(campaign.getId());
-        return CampaignDetailResponse.from(campaign, milestones);
+        return CampaignDetailResponse.from(campaign, milestones, ledgerService.getSummary(campaign.getId()));
     }
 
     private String blankToNull(String value) {
