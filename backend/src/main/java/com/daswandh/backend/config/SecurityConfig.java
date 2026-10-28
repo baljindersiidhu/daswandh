@@ -1,4 +1,5 @@
 package com.daswandh.backend.config;
+import org.springframework.http.HttpMethod;
 
 import com.daswandh.backend.security.JwtAuthenticationFilter;
 import com.daswandh.backend.security.JwtService;
@@ -46,6 +47,10 @@ public class SecurityConfig {
                         .accessDeniedHandler(securityErrorHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/error", "/api/health", "/api/auth/**").permitAll()
+                        // "/mine" must come BEFORE the public "/api/campaigns/*" rule, or it would be public
+                        .requestMatchers(HttpMethod.GET, "/api/campaigns/mine").hasRole("CREATOR")
+                        .requestMatchers(HttpMethod.GET, "/api/campaigns", "/api/campaigns/*").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/campaigns", "/api/campaigns/*/publish").hasRole("CREATOR")
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
