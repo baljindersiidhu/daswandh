@@ -52,6 +52,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/campaigns", "/api/campaigns/*", "/api/campaigns/*/ledger").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/campaigns", "/api/campaigns/*/publish").hasRole("CREATOR")
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/campaigns/*/donations", "/api/donations/verify").hasRole("DONOR")
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
