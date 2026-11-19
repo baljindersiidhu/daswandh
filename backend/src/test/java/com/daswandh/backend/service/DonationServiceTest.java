@@ -143,4 +143,50 @@ class DonationServiceTest {
         assertThat(response.currency()).isEqualTo("INR");
         assertThat(response.razorpayKeyId()).isEqualTo("rzp_test_key");
     }
+    // ---------- webhook paths ----------
+
+    @Test
+    void webhookConfirmationMarksPaidAndRecordsLedger() {
+        Donation donation = donation("donor@test.com", DonationStatus.CREATED);
+        when(donationRepository.findByRazorpayOrderIdForUpdate("order_1")).thenReturn(Optional.of(donation));
+
+        donationService.confirmPaymentFromWebhook("order_1", "pay_1", 50_000L);
+
+        assertThat(donation.getStatus()).isEqualTo(DonationStatus.PAID);
+        verify(ledgerService).recordDonation(donation);
+    }
+
+    @Test
+    void webhookForAnUnknownOrderIsIgnored() {
+        when(donationRepository.findByRazorpayOrderIdForUpdate("order_x")).thenReturn(Optional.empty());
+
+        donationService.confirmPaymentFromWebhook("order_x", "pay_1", 50_000L);
+
+        verify(ledgerService, never()).recordDonation(any(Donation.class));
+    }
+
+    @Test
+    void webhookWithTheWrongAmountIsNotCredited() {
+        Donation donation = donation("donor@test.com", DonationStatus.CREATED); // amount is 50_000
+        when(donationRepository.findByRazorpayOrderIdForUpdate("order_1")).thenReturn(Optional.of(donation));
+
+        donationService.confirmPaymentFromWebhook("order_1", "pay_1", 100L);
+
+        assertThat(donation.getStatus()).isEqualTo(DonationStatus.CREATED);
+        verify(ledgerService, never()).recordDonation(any(Donation.class));
+    }
+
+    @Test
+    void failureEventMarksCreatedDonationFailedButNeverDowngradesPaid() {
+        Donation created = donation("donor@test.com", DonationStatus.CREATED);
+        Donation paid = donation("donor@test.com", DonationStatus.PAID);
+        when(donationRepository.findByRazorpayOrderIdForUpdate("order_1")).thenReturn(Optional.of(created));
+        when(donationRepository.findByRazorpayOrderIdForUpdate("order_2")).thenReturn(Optional.of(paid));
+
+        donationService.markFailedFromWebhook("order_1");
+        donationService.markFailedFromWebhook("order_2");
+
+        assertThat(created.getStatus()).isEqualTo(DonationStatus.FAILED);
+        assertThat(paid.getStatus()).isEqualTo(DonationStatus.PAID);
+    }
 }

@@ -3,6 +3,7 @@ package com.daswandh.backend.payment;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import java.nio.charset.StandardCharsets;
 
 class HmacSignerTest {
 
@@ -25,5 +26,12 @@ class HmacSignerTest {
         assertThat(HmacSigner.constantTimeEquals("abc123", "abc123")).isTrue();
         assertThat(HmacSigner.constantTimeEquals("abc123", "abc124")).isFalse();
         assertThat(HmacSigner.constantTimeEquals("abc", "abcdef")).isFalse();
+    }
+    @Test
+    void bytesAndStringVersionsGiveTheSameSignature() {
+        String data = "order_1|pay_1";
+
+        assertThat(HmacSigner.hmacSha256Hex(data.getBytes(StandardCharsets.UTF_8), "secret"))
+                .isEqualTo(HmacSigner.hmacSha256Hex(data, "secret"));
     }
 }

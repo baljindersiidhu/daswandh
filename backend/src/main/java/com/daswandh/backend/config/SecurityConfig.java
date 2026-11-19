@@ -47,6 +47,7 @@ public class SecurityConfig {
                         .accessDeniedHandler(securityErrorHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/error", "/api/health", "/api/auth/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/webhooks/razorpay").permitAll()
                         // "/mine" must come BEFORE the public "/api/campaigns/*" rule, or it would be public
                         .requestMatchers(HttpMethod.GET, "/api/campaigns/mine").hasRole("CREATOR")
                         .requestMatchers(HttpMethod.GET, "/api/campaigns", "/api/campaigns/*", "/api/campaigns/*/ledger").permitAll()

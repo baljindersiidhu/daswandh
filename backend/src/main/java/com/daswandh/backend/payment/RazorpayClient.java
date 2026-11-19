@@ -23,27 +23,36 @@ public class RazorpayClient {
     private final RestClient restClient;
     private final String keyId;
     private final String keySecret;
+    private final String webhookSecret;
 
-    public RazorpayClient(@Value("${app.razorpay.key-id}") String keyId,
-                          @Value("${app.razorpay.key-secret}") String keySecret,
-                          @Value("${app.razorpay.base-url}") String baseUrl) {
+    public RazorpayClient(
+            @Value("${app.razorpay.key-id}") String keyId,
+            @Value("${app.razorpay.key-secret}") String keySecret,
+            @Value("${app.razorpay.base-url}") String baseUrl,
+            @Value("${app.razorpay.webhook-secret}") String webhookSecret) {
 
         // Safety rail: this project must never be able to touch live payments.
         if (!keyId.startsWith("rzp_test_")) {
-            throw new IllegalStateException("Only Razorpay TEST keys (rzp_test_...) are allowed in this project");
+            throw new IllegalStateException(
+                    "Only Razorpay TEST keys (rzp_test_...) are allowed in this project");
         }
+
         this.keyId = keyId;
         this.keySecret = keySecret;
+        this.webhookSecret = webhookSecret;
 
         // Timeouts: without them, a stuck Razorpay call would hang our request thread forever.
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
+                HttpClient.newBuilder()
+                        .connectTimeout(Duration.ofSeconds(5))
+                        .build());
+
         requestFactory.setReadTimeout(Duration.ofSeconds(10));
 
         this.restClient = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestFactory(requestFactory)
-                .defaultHeaders(headers -> headers.setBasicAuth(keyId, keySecret)) // Razorpay uses Basic auth
+                .defaultHeaders(headers -> headers.setBasicAuth(keyId, keySecret))
                 .build();
     }
 
@@ -59,6 +68,7 @@ public class RazorpayClient {
                 "currency", "INR",
                 "receipt", receipt,
                 "notes", notes);
+
         try {
             Map<String, Object> response = restClient.post()
                     .uri("/orders")
@@ -70,17 +80,46 @@ public class RazorpayClient {
             if (response != null && response.get("id") instanceof String orderId) {
                 return orderId;
             }
-            throw new ExternalServiceException("Payment provider returned an unexpected response.");
+
+            throw new ExternalServiceException(
+                    "Payment provider returned an unexpected response.");
+
         } catch (RestClientException e) {
             // Log the real cause for us, show the client a safe message.
             log.error("Razorpay order creation failed", e);
-            throw new ExternalServiceException("Payment provider is unavailable. Please try again.");
+            throw new ExternalServiceException(
+                    "Payment provider is unavailable. Please try again.");
         }
     }
 
     // Razorpay signs "order_id|payment_id" with our key secret.
-    public boolean isValidPaymentSignature(String orderId, String paymentId, String signature) {
-        String expected = HmacSigner.hmacSha256Hex(orderId + "|" + paymentId, keySecret);
+    public boolean isValidPaymentSignature(
+            String orderId,
+            String paymentId,
+            String signature) {
+
+        if (signature == null) {
+            return false;
+        }
+
+        String expected = HmacSigner.hmacSha256Hex(
+                orderId + "|" + paymentId,
+                keySecret);
+
         return HmacSigner.constantTimeEquals(expected, signature);
     }
+
+    // Webhooks are signed with the webhook secret over the exact raw request bytes.
+    public boolean isValidWebhookSignature(byte[] rawBody, String signature) {
+        if (signature == null) {
+            return false;
+        }
+
+
+        String expected = HmacSigner.hmacSha256Hex(rawBody, webhookSecret);
+
+        return HmacSigner.constantTimeEquals(expected, signature);
+    }
+
+
 }

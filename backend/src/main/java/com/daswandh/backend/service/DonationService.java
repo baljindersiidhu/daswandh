@@ -17,15 +17,20 @@ import com.daswandh.backend.payment.RazorpayClient;
 import com.daswandh.backend.repository.CampaignRepository;
 import com.daswandh.backend.repository.DonationRepository;
 import com.daswandh.backend.repository.UserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class DonationService {
+
+    private static final Logger log = LoggerFactory.getLogger(DonationService.class);
 
     private final DonationRepository donationRepository;
     private final CampaignRepository campaignRepository;
@@ -45,8 +50,8 @@ public class DonationService {
         this.razorpayClient = razorpayClient;
     }
 
-    // Deliberately NOT @Transactional: we call Razorpay over the network, and we must not hold a
-    // database connection open while waiting for it. Each repository call below is its own short transaction.
+    // Deliberately NOT @Transactional: we call Razorpay over the network and must not hold
+    // a database connection open while waiting for it.
     public DonationOrderResponse createOrder(String donorEmail, Long campaignId, CreateDonationRequest request) {
         User donor = userRepository.findByEmail(donorEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
@@ -60,12 +65,10 @@ public class DonationService {
             throw new ConflictException("This campaign has ended");
         }
 
-        // 1) Ask Razorpay for an order (the amount is locked in here, on the server)
         String receipt = "don_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
         String orderId = razorpayClient.createOrder(request.amountPaise(), receipt,
                 Map.of("campaignId", String.valueOf(campaignId)));
 
-        // 2) Then remember it. If this save fails we only have an unpaid order at Razorpay: harmless.
         Donation donation = donationRepository.save(
                 new Donation(campaign, donor, request.amountPaise(), request.anonymous(), orderId));
 
@@ -73,10 +76,8 @@ public class DonationService {
                 "INR", razorpayClient.getKeyId());
     }
 
-    // Called when the browser reports "payment done".
-    @Transactional
+    // Path 1: the browser says "payment done"
     public DonationResponse verifyPayment(String donorEmail, VerifyPaymentRequest request) {
-        // Cheap check first, before touching the database: is this really signed by Razorpay?
         if (!razorpayClient.isValidPaymentSignature(request.razorpayOrderId(),
                 request.razorpayPaymentId(), request.razorpaySignature())) {
             throw new BadRequestException("Invalid payment signature");
@@ -84,13 +85,11 @@ public class DonationService {
         return confirmPaymentAsDonor(donorEmail, request.razorpayOrderId(), request.razorpayPaymentId());
     }
 
-    // One transaction: lock the donation, mark it PAID and append the ledger entry. All or nothing.
     @Transactional
     public DonationResponse confirmPaymentAsDonor(String donorEmail, String orderId, String paymentId) {
         Donation donation = donationRepository.findByRazorpayOrderIdForUpdate(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Donation not found"));
 
-        // Ownership check: you can only confirm your own donation.
         if (!donation.getDonor().getEmail().equals(donorEmail)) {
             throw new ForbiddenException("You can only confirm your own donations");
         }
@@ -99,14 +98,45 @@ public class DonationService {
         return DonationResponse.from(donation);
     }
 
-    // Idempotent: calling it again for an already-paid donation does nothing.
-    // Step 8's webhook will call this same method.
+    // Path 2: Razorpay's server says "payment captured". No logged-in user here, so no ownership check:
+    // the webhook signature was already verified by WebhookService.
+    @Transactional
+    public void confirmPaymentFromWebhook(String orderId, String paymentId, long amountPaise) {
+        Optional<Donation> found = donationRepository.findByRazorpayOrderIdForUpdate(orderId);
+        if (found.isEmpty()) {
+            // Not one of ours (or not saved yet). Retrying won't help, so we just note it.
+            log.warn("Webhook for unknown order {} ignored", orderId);
+            return;
+        }
+        Donation donation = found.get();
+
+        // Defensive: the order was created by us with a fixed amount, so this should never happen.
+        if (donation.getAmountPaise() != amountPaise) {
+            log.error("Webhook amount mismatch for order {}: expected {} paise, got {} paise. Not crediting.",
+                    orderId, donation.getAmountPaise(), amountPaise);
+            return;
+        }
+        markPaid(donation, paymentId);
+    }
+
+    @Transactional
+    public void markFailedFromWebhook(String orderId) {
+        donationRepository.findByRazorpayOrderIdForUpdate(orderId).ifPresent(donation -> {
+            // Only CREATED can become FAILED. A PAID donation is never downgraded by a late failure event.
+            if (donation.getStatus() == DonationStatus.CREATED) {
+                donation.setStatus(DonationStatus.FAILED);
+            }
+        });
+    }
+
+    // Idempotent: both paths end here, and a second call for a paid donation does nothing.
+    // A FAILED donation CAN become PAID: Razorpay lets a donor retry the same order.
     private void markPaid(Donation donation, String paymentId) {
         if (donation.getStatus() == DonationStatus.PAID) {
             return;
         }
-        donation.setStatus(DonationStatus.PAID);          // dirty checking writes the UPDATE at commit
+        donation.setStatus(DonationStatus.PAID);
         donation.setRazorpayPaymentId(paymentId);
-        ledgerService.recordDonation(donation);           // joins THIS transaction (MANDATORY)
+        ledgerService.recordDonation(donation); // joins THIS transaction (MANDATORY)
     }
 }
